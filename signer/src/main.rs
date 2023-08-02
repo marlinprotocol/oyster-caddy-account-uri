@@ -21,6 +21,12 @@ pub enum SignerError {
 
 #[derive(Serialize)]
 struct AppState {
+    private_key: Vec<u8>,
+    ca_info_path: String,
+}
+
+#[derive(Serialize)]
+struct BinderResponse {
     sig: String,
     acme_id: String,
 }
@@ -80,7 +86,29 @@ fn get_sig(ca_id: String, private_key: Vec<u8>) -> Result<String, SignerError> {
 }
 
 #[get("/")]
-async fn hello(data: web::Data<AppState>) -> impl Responder {
+async fn account(params: web::Data<AppState>) -> impl Responder {
+    let acme_id = get_ca_id(&params.ca_info_path).unwrap();
+    let sig = get_sig(acme_id.to_string(), params.private_key.clone()).unwrap();
+    let data = BinderResponse {
+        acme_id: acme_id,
+        sig: sig,
+    };
+    // response is a json with the signature and the ca_id
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(data)
+}
+
+#[get("/{acme}")]
+async fn account_by_acme(path: web::Path<String>, params: web::Data<AppState>) -> impl Responder {
+    let acme = path.into_inner();
+    let ca_info_path = format!("/var/lib/caddy/acme/{}/users/default/default.json", acme);
+    let acme_id = get_ca_id(&ca_info_path).unwrap();
+    let sig = get_sig(acme_id.to_string(), params.private_key.clone()).unwrap();
+    let data = BinderResponse {
+        acme_id: acme_id,
+        sig: sig,
+    };
     // response is a json with the signature and the ca_id
     HttpResponse::Ok()
         .content_type("application/json")
@@ -107,18 +135,17 @@ async fn main() -> std::io::Result<()> {
     let ca_info_path = format!("/var/lib/caddy/acme/{}/users/default/default.json", acme);
 
     let private_key = fs::read(enclave_priv_key_path)?;
-    let acme_id = get_ca_id(&ca_info_path).unwrap();
-    let sig = get_sig(acme_id.to_string(), private_key).unwrap();
 
     println!("starting HTTP server at http://127.0.0.1:{}", port);
 
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(AppState {
-                sig: sig.to_string(),
-                acme_id: acme_id.to_string(),
+                private_key: private_key.clone(),
+                ca_info_path: ca_info_path.clone(),
             }))
-            .service(hello)
+            .service(account)
+            .service(account_by_acme)
     })
     .bind(("127.0.0.1", port))?
     .run()
