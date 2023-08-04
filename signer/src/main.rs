@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::fs;
+use std::{fs, path::PathBuf};
 use libsodium_sys::crypto_sign_detached;
 use serde_json::Value;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
@@ -17,12 +17,16 @@ pub enum SignerError {
     SignFailed,
     #[error("failed to initialize {0}")]
     InitFailed(String),
+    #[error("Invalid ACME data directory {0}")]
+    InvalidDataDir(String),
 }
 
 #[derive(Serialize)]
 struct AppState {
     private_key: Vec<u8>,
-    ca_info_path: String,
+    default_acme: String,
+    default_email: String,
+    default_user: String,
 }
 
 #[derive(Serialize)]
@@ -47,10 +51,26 @@ struct Cli {
     port: u16,
 }
 
-fn get_ca_id(ca_info_path: &str) -> Result<String, SignerError> {
-    let ca_info = match fs::read_to_string(ca_info_path) {
+fn get_ca_info_path(acme: &str, email: &str, user: &str) -> Result<PathBuf, SignerError> {
+    let base_ca_path = "/var/lib/caddy/acme";
+    let ca_info_path: PathBuf = [
+        base_ca_path, 
+        acme, 
+        "users", 
+        email, 
+        format!("{}.json", user).as_str()
+    ].iter().collect();
+    if !ca_info_path.starts_with(base_ca_path) {
+        return Err(SignerError::InvalidDataDir(ca_info_path.into_os_string().into_string().unwrap()));
+    }
+    Ok(ca_info_path)
+}
+
+fn get_ca_id(acme: &str, email: &str, user: &str) -> Result<String, SignerError> {
+    let ca_info_path = get_ca_info_path(acme, email, user).unwrap();
+    let ca_info = match fs::read_to_string(&ca_info_path) {
         Ok(ca_info) => ca_info,
-        Err(_) => return Err(SignerError::FileReadFailed(ca_info_path.to_string())),
+        Err(_) => return Err(SignerError::FileReadFailed(ca_info_path.into_os_string().into_string().unwrap())),
     };
     let ca_info: Value = match serde_json::from_str(&ca_info) {
         Ok(ca_info) => ca_info,
@@ -64,7 +84,7 @@ fn get_ca_id(ca_info_path: &str) -> Result<String, SignerError> {
     Ok(ca_id)
 }
 
-fn get_sig(ca_id: String, private_key: Vec<u8>) -> Result<String, SignerError> {
+fn get_sig(ca_id: &String, private_key: &Vec<u8>) -> Result<String, SignerError> {
     let mut sig = [0u8; 64];
     const SIG_PREFIX: &str = "signed-acme-id-for-secure-cert-generation-";
     let msg_to_sign = format!("{}{}", SIG_PREFIX.to_string(), ca_id);
@@ -87,8 +107,8 @@ fn get_sig(ca_id: String, private_key: Vec<u8>) -> Result<String, SignerError> {
 
 #[get("/")]
 async fn account(params: web::Data<AppState>) -> impl Responder {
-    let acme_id = get_ca_id(&params.ca_info_path).unwrap();
-    let sig = get_sig(acme_id.to_string(), params.private_key.clone()).unwrap();
+    let acme_id = get_ca_id(&params.default_acme, &params.default_email, &params.default_user).unwrap();
+    let sig = get_sig(&acme_id.to_string(), &params.private_key).unwrap();
     let data = BinderResponse {
         acme_id: acme_id,
         sig: sig,
@@ -102,14 +122,28 @@ async fn account(params: web::Data<AppState>) -> impl Responder {
 #[get("/{acme}")]
 async fn account_by_acme(path: web::Path<String>, params: web::Data<AppState>) -> impl Responder {
     let acme = path.into_inner();
-    let ca_info_path = format!("/var/lib/caddy/acme/{}/users/default/default.json", acme);
-    let acme_id = get_ca_id(&ca_info_path).unwrap();
-    let sig = get_sig(acme_id.to_string(), params.private_key.clone()).unwrap();
+    let acme_id = get_ca_id(&acme, &params.default_email, &params.default_user).unwrap();
+    let sig = get_sig(&acme_id.to_string(), &params.private_key).unwrap();
     let data = BinderResponse {
         acme_id: acme_id,
         sig: sig,
     };
-    // response is a json with the signature and the ca_id
+
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(data)
+}
+
+#[get("/{acme}/{email}/{user}")]
+async fn account_by_acme_email_user(path: web::Path<(String, String, String)>, params: web::Data<AppState>) -> impl Responder {
+    let (acme, email, user) = path.into_inner();
+    let acme_id = get_ca_id(acme.as_str(), email.as_str(), user.as_str()).unwrap();
+    let sig = get_sig(&acme_id.to_string(), &params.private_key).unwrap();
+    let data = BinderResponse {
+        acme_id: acme_id,
+        sig: sig,
+    };
+
     HttpResponse::Ok()
         .content_type("application/json")
         .json(data)
@@ -132,8 +166,6 @@ async fn main() -> std::io::Result<()> {
     let acme = cli.acme;
     let port: u16 = cli.port;
 
-    let ca_info_path = format!("/var/lib/caddy/acme/{}/users/default/default.json", acme);
-
     let private_key = fs::read(enclave_priv_key_path)?;
 
     println!("starting HTTP server at http://127.0.0.1:{}", port);
@@ -142,10 +174,13 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(AppState {
                 private_key: private_key.clone(),
-                ca_info_path: ca_info_path.clone(),
+                default_acme: acme.clone(),
+                default_email: "default".to_string(),
+                default_user: "default".to_string(),
             }))
             .service(account)
             .service(account_by_acme)
+            .service(account_by_acme_email_user)
     })
     .bind(("127.0.0.1", port))?
     .run()
