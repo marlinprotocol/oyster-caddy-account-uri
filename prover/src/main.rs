@@ -3,6 +3,7 @@ use oyster::{get_attestation_doc, verify};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use libsodium_sys::crypto_sign_verify_detached;
+use std::net::Ipv4Addr;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AcmeAccountResponse {
@@ -13,13 +14,25 @@ struct AcmeAccountResponse {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// endpoint of the attestation server (http://<ip:port>)
-    #[clap(short = 't', long, value_parser)]
-    attestation_endpoint: String,
+    /// IP address of the enclave
+    #[clap(short = 't', long)]
+    enclave_ip: Ipv4Addr,
 
-    /// endpoint of the acme account server (http://<ip:port>)
-    #[clap(short = 'd', long, value_parser)]
-    acme_account_endpoint: String,
+    /// attestation server port used on enclave
+    #[clap(short = 'b', long, default_value = "1300")]
+    attestation_port: u16,
+
+    /// CAA Binder port used on enclave
+    #[clap(short = 'd', long, default_value = "1500")]
+    caa_binder_port: u16,
+
+    /// ACME directory
+    #[clap(long, default_value="acme-v02.api.letsencrypt.org-directory")]
+    ca: String,
+
+    /// email specified in Caddyfile
+    #[clap(short, long, default_value = "default")]
+    email: String,
 
     /// expected pcr0
     #[arg(short = '0', long)]
@@ -46,6 +59,26 @@ struct Cli {
     max_age: usize,
 }
 
+async fn verify_sig(message: String, sig: Vec<u8>, pub_key: [u8; 32]) -> Result<(), Box<dyn Error>> {
+    const SIG_PREFIX: &str = "signed-acme-id-for-secure-cert-generation-";
+    let msg_to_verify = format!("{}{}", SIG_PREFIX.to_string(), message);
+    unsafe {
+        let result = crypto_sign_verify_detached(
+            sig.as_ptr(), 
+            msg_to_verify.as_ptr(), 
+            msg_to_verify.len().try_into().unwrap(), 
+            pub_key.as_ptr()
+        );
+    
+        if result == 0 {
+            return Ok(());
+        } else {
+            println!("Signature is invalid");
+            panic!("Signature is invalid");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // initialize libsodium
@@ -57,7 +90,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     let pcrs = vec![cli.pcr0, cli.pcr1, cli.pcr2];
-    let attestation_doc = get_attestation_doc(cli.attestation_endpoint.parse()?).await?;
+    let attestation_endpoint = format!("http://{}:{}", cli.enclave_ip, cli.attestation_port);
+    let attestation_doc = get_attestation_doc(attestation_endpoint.parse()?).await?;
 
     let pub_key = verify(
         attestation_doc,
@@ -66,10 +100,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cli.min_mem,
         cli.max_age,
     )?;
-    
+
     println!("Public key verified from enclave attestation");
     
-    let response = reqwest::get(cli.acme_account_endpoint).await?;
+    let mut caa_binder_endpoint = format!("http://{}:{}", cli.enclave_ip, cli.caa_binder_port);
+
+    if cli.ca != "acme-v02.api.letsencrypt.org-directory" {
+        caa_binder_endpoint.push_str(&format!("/{}", cli.ca));
+    }
+    if cli.email != "default" {
+        caa_binder_endpoint.push_str(&format!("/{}/{}", cli.email, cli.email.split("@").collect::<Vec<&str>>()[0]));
+    }
+
+    let response = reqwest::get(caa_binder_endpoint).await?;
     let ca_data: AcmeAccountResponse = response.json().await?;
 
     const SIG_PREFIX: &str = "signed-acme-id-for-secure-cert-generation-";
@@ -77,20 +120,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let sig = hex::decode(ca_data.sig.clone()).unwrap();
     
-     unsafe {
-        let result = crypto_sign_verify_detached(
-            sig.as_ptr(), 
-            msg_to_verify.as_ptr(), 
-            msg_to_verify.len().try_into().unwrap(), 
-            pub_key.as_ptr()
-        );
+    verify_sig(msg_to_verify, sig, pub_key).await?;
 
-        if result == 0 {
-            println!("Signature from enclave verified, ACME account to use in CAA record is {}", ca_data.acme_id);
-            return Ok(());
-        } else {
-            println!("Signature is invalid");
-            panic!("Signature is invalid");
-        }
-    }
+    println!("Signature on ACME accounturi verified");
+    println!("Please set the following CAA record in your DNS");
+    println!("IN CAA 0 issue \"letsencrypt.org; accounturi={}\"", ca_data.acme_id);
+
+    Ok(())
 }

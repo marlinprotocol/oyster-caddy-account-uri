@@ -119,10 +119,10 @@ async fn account(params: web::Data<AppState>) -> impl Responder {
         .json(data)
 }
 
-#[get("/{acme}")]
+#[get("/{acme_dir}")]
 async fn account_by_acme(path: web::Path<String>, params: web::Data<AppState>) -> impl Responder {
-    let acme = path.into_inner();
-    let acme_id = get_ca_id(&acme, &params.default_email, &params.default_user).unwrap();
+    let acme_dir = path.into_inner();
+    let acme_id = get_ca_id(&acme_dir, &params.default_email, &params.default_user).unwrap();
     let sig = get_sig(&acme_id.to_string(), &params.private_key).unwrap();
     let data = BinderResponse {
         acme_id: acme_id,
@@ -134,10 +134,10 @@ async fn account_by_acme(path: web::Path<String>, params: web::Data<AppState>) -
         .json(data)
 }
 
-#[get("/{acme}/{email}/{user}")]
+#[get("/{acme_dir}/{email}/{user}")]
 async fn account_by_acme_email_user(path: web::Path<(String, String, String)>, params: web::Data<AppState>) -> impl Responder {
-    let (acme, email, user) = path.into_inner();
-    let acme_id = get_ca_id(acme.as_str(), email.as_str(), user.as_str()).unwrap();
+    let (acme_dir, email, user) = path.into_inner();
+    let acme_id = get_ca_id(acme_dir.as_str(), email.as_str(), user.as_str()).unwrap();
     let sig = get_sig(&acme_id.to_string(), &params.private_key).unwrap();
     let data = BinderResponse {
         acme_id: acme_id,
