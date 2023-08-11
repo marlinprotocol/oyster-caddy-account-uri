@@ -3,8 +3,6 @@ name = "acme-id-prover"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 reqwest = { version = "0.11", features = ["json"] }
 openssl = { version = "0.10", features = ["vendored"] }
@@ -15,6 +13,10 @@ clap = { version = "4.0", features = ["derive"] }
 hex = "0.4.3"
 oyster-sdk = "0.3.0"
 libsodium-sys-stable = "1.19.27"
+
+[[bin]]
+name = "prover"
+path = "src/main.rs"
 
 [profile.release]
 strip = true
