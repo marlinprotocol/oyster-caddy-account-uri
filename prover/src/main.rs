@@ -59,7 +59,7 @@ struct Cli {
     max_age: usize,
 }
 
-async fn verify_sig(message: String, sig: Vec<u8>, pub_key: [u8; 32]) -> Result<(), Box<dyn Error>> {
+async fn verify_sig(message: &String, sig: Vec<u8>, pub_key: [u8; 32]) -> Result<(), Box<dyn Error>> {
     const SIG_PREFIX: &str = "signed-acme-id-for-secure-cert-generation-";
     let msg_to_verify = format!("{}{}", SIG_PREFIX.to_string(), message);
     unsafe {
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     println!("Public key verified from enclave attestation");
-    
+
     let mut caa_binder_endpoint = format!("http://{}:{}", cli.enclave_ip, cli.caa_binder_port);
 
     if cli.ca != "acme-v02.api.letsencrypt.org-directory" {
@@ -115,16 +115,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let response = reqwest::get(caa_binder_endpoint).await?;
     let ca_data: AcmeAccountResponse = response.json().await?;
 
-    const SIG_PREFIX: &str = "signed-acme-id-for-secure-cert-generation-";
-    let msg_to_verify = format!("{}{}", SIG_PREFIX.to_string(), ca_data.acme_id);
-
     let sig = hex::decode(ca_data.sig.clone()).unwrap();
     
-    verify_sig(msg_to_verify, sig, pub_key).await?;
+    verify_sig(&ca_data.acme_id, sig, pub_key).await?;
 
     println!("Signature on ACME accounturi verified");
+    println!("--------------------------------------------------------------------------------------------------------");
     println!("Please set the following CAA record in your DNS");
     println!("IN CAA 0 issue \"letsencrypt.org; accounturi={}\"", ca_data.acme_id);
+    println!("--------------------------------------------------------------------------------------------------------");
 
     Ok(())
 }
