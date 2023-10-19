@@ -168,7 +168,7 @@ async fn main() -> std::io::Result<()> {
 
     let private_key = fs::read(enclave_priv_key_path)?;
 
-    println!("starting HTTP server at http://127.0.0.1:{}", port);
+    println!("starting HTTP server at http://0.0.0.0:{}", port);
 
     HttpServer::new(move || {
         App::new()
@@ -182,7 +182,7 @@ async fn main() -> std::io::Result<()> {
             .service(account_by_acme)
             .service(account_by_acme_email_user)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await
 }
